@@ -1,5 +1,5 @@
 import * as state from './state.js';
-import { computeAll } from './calc.js';
+import { computeAll, getRepartitionCadeau } from './calc.js';
 
 function app() {
   return window.app;
@@ -225,33 +225,129 @@ function renderCadeaux(session) {
 
 function renderResultats(session) {
   const participants = session.participants;
-  const { soldes, dettes } = computeAll(participants, session.cadeaux);
+  const { soldes, paye, doit, dettes, dettesBrutes } = computeAll(participants, session.cadeaux);
 
   const soldesList = participants.length === 0
     ? el('p', { className: 'empty' }, 'Ajoutez des participants et des cadeaux.')
     : el('ul', { className: 'soldes-list' },
         participants.map((p) => {
+          const payeVal = paye.get(p.id) ?? 0;
+          const doitVal = doit.get(p.id) ?? 0;
           const solde = soldes.get(p.id) ?? 0;
           const className = 'solde ' + (solde > 0 ? 'creancier' : solde < 0 ? 'debiteur' : 'zero');
-          return el('li', { className }, p.nom, ' : ', solde.toFixed(2), ' €');
+          const soldeLabel = solde > 0 ? `+${solde.toFixed(2)} € (doit recevoir)` : solde < 0 ? `−${Math.abs(solde).toFixed(2)} € (doit)` : '0,00 € (équilibré)';
+          return el('li', { className },
+            p.nom, ' : a payé ', payeVal.toFixed(2), ' €, doit ', doitVal.toFixed(2), ' € → ', soldeLabel
+          );
         })
       );
 
-  const dettesList = dettes.length === 0
+  const dettesBrutesList = dettesBrutes.length === 0
     ? el('p', { className: 'empty' }, 'Aucune dette à afficher.')
     : el('ul', { className: 'dettes-list' },
-        dettes.map((d) => {
+        dettesBrutes.map((d) => {
           const from = participants.find((p) => p.id === d.fromId)?.nom ?? d.fromId;
           const to = participants.find((p) => p.id === d.toId)?.nom ?? d.toId;
           return el('li', { className: 'dette-item' }, from, ' doit ', d.montant.toFixed(2), ' € à ', to);
         })
       );
+  const virementsMinimauxList = dettes.length === 0
+    ? null
+    : el('div', { className: 'virements-minimaux' },
+        el('h4', {}, 'Virements minimaux (suggestion)'),
+        el('ul', { className: 'dettes-list' },
+          dettes.map((d) => {
+            const from = participants.find((p) => p.id === d.fromId)?.nom ?? d.fromId;
+            const to = participants.find((p) => p.id === d.toId)?.nom ?? d.toId;
+            return el('li', { className: 'dette-item' }, from, ' doit ', d.montant.toFixed(2), ' € à ', to);
+          })
+        )
+      );
+
+  const detailParAchat = session.cadeaux.length === 0 || participants.length === 0
+    ? el('p', { className: 'empty' }, 'Aucun cadeau ou aucun participant.')
+    : (() => {
+        const allDebtPairs = participants.flatMap((from) =>
+          participants.filter((to) => to.id !== from.id).map((to) => ({ fromId: from.id, toId: to.id }))
+        );
+        const grossDettesMap = new Map();
+        for (const c of session.cadeaux) {
+          const rep = getRepartitionCadeau(c);
+          for (const { fromId, toId } of allDebtPairs) {
+            if (rep.acheteurId === toId) {
+              const part = rep.parts.get(fromId);
+              if (part != null && part > 0) {
+                const key = `${fromId}-${toId}`;
+                const prev = grossDettesMap.get(key) ?? 0;
+                grossDettesMap.set(key, Math.round((prev + part) * 100) / 100);
+              }
+            }
+          }
+        }
+        const debtHeaders = allDebtPairs.map(({ fromId, toId }) => {
+          const from = participants.find((p) => p.id === fromId)?.nom ?? fromId;
+          const to = participants.find((p) => p.id === toId)?.nom ?? toId;
+          return el('th', { className: 'col-dette' }, from, ' → ', to);
+        });
+        const thead = el('thead', {},
+          el('tr', {},
+            el('th', { className: 'col-achat' }, 'Achat'),
+            ...participants.map((p) => el('th', { className: 'col-participant' }, p.nom)),
+            ...debtHeaders
+          )
+        );
+        const achatRows = session.cadeaux.map((c) => {
+          const rep = getRepartitionCadeau(c);
+          const cells = participants.map((p) => {
+            if (p.id === rep.acheteurId) {
+              return el('td', { className: 'cell-montant cell-paye' }, '+', rep.montantTotal.toFixed(2), ' €');
+            }
+            const part = rep.parts.get(p.id);
+            if (part != null) {
+              return el('td', { className: 'cell-montant cell-due' }, '−', part.toFixed(2), ' €');
+            }
+            return el('td', { className: 'cell-montant' }, '—');
+          });
+          const debtCells = allDebtPairs.map(({ fromId, toId }) => {
+            const part = rep.acheteurId === toId ? rep.parts.get(fromId) : undefined;
+            if (part != null && part > 0) {
+              return el('td', { className: 'cell-montant cell-dette' }, part.toFixed(2), ' €');
+            }
+            return el('td', { className: 'cell-montant cell-dette-empty' }, '—');
+          });
+          return el('tr', {},
+            el('td', { className: 'cell-achat' }, c.nom, ' (', rep.montantTotal.toFixed(2), ' €)'),
+            ...cells,
+            ...debtCells
+          );
+        });
+        const remboursementRow = el('tr', { className: 'row-remboursement' },
+          el('td', { className: 'cell-achat' }, 'Total dû (brut)'),
+          ...participants.map(() => el('td', { className: 'cell-montant' }, '—')),
+          ...allDebtPairs.map(({ fromId, toId }) => {
+            const montant = grossDettesMap.get(`${fromId}-${toId}`);
+            if (montant != null && montant > 0) {
+              return el('td', { className: 'cell-montant cell-dette' }, montant.toFixed(2), ' €');
+            }
+            return el('td', { className: 'cell-montant cell-dette-empty' }, '—');
+          })
+        );
+        return el('div', { className: 'repartition-par-achat' },
+          el('table', { className: 'repartition-table' },
+            thead,
+            el('tbody', {}, ...achatRows, remboursementRow)
+          )
+        );
+      })();
 
   return el('div', { className: 'panel panel-resultats' },
     el('h3', {}, 'Soldes nets'),
     soldesList,
-    el('h3', {}, 'Qui doit à qui'),
-    dettesList
+    el('h3', {}, 'Qui doit à qui (détail par paire)'),
+    dettesBrutesList,
+    virementsMinimauxList,
+    el('h3', {}, 'Détail par achat'),
+    detailParAchat
   );
 }
 
