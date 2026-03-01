@@ -11,7 +11,7 @@ body {
 }
 
 #app {
-  max-width: 720px;
+  max-width: min(1400px, 98vw);
   margin: 0 auto;
 }
 
@@ -346,4 +346,83 @@ h3 {
 
 .dette-item:last-child {
   border-bottom: none;
+}
+
+.virements-minimaux {
+  margin-top: 1rem;
+}
+
+.virements-minimaux h4 {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  margin: 0 0 0.35rem 0;
+  color: #555;
+}
+
+/* Détail par achat (tableau) */
+.repartition-par-achat {
+  margin-top: 0.5rem;
+  overflow-x: auto;
+}
+
+.repartition-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9375rem;
+}
+
+.repartition-table th,
+.repartition-table td {
+  padding: 0.4rem 0.5rem;
+  border: 1px solid #ddd;
+  text-align: left;
+}
+
+.repartition-table th {
+  background: #f5f5f5;
+  font-weight: 600;
+}
+
+.repartition-table .col-achat {
+  min-width: 100px;
+}
+
+.repartition-table .col-participant {
+  min-width: 64px;
+}
+
+.repartition-table .cell-achat {
+  font-weight: 500;
+}
+
+.repartition-table .cell-montant {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.repartition-table .cell-paye {
+  color: #166534;
+  font-weight: 500;
+}
+
+.repartition-table .cell-due {
+  color: #b91c1c;
+  font-weight: 500;
+}
+
+.repartition-table .col-dette {
+  min-width: 72px;
+}
+
+.repartition-table .cell-dette {
+  font-weight: 600;
+}
+
+.repartition-table .cell-dette-empty {
+  color: #999;
+}
+
+.repartition-table .row-remboursement {
+  background: #f9fafb;
+  font-weight: 500;
 }

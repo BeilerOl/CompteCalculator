@@ -58,12 +58,31 @@ function repartirMontant(montant, contributeurIds) {
 }
 
 /**
+ * Retourne pour un cadeau la répartition : montant total, acheteur, et part due par chaque contributeur.
+ * @param {Cadeau} cadeau
+ * @returns {{ montantTotal: number, acheteurId: string, parts: Map<string, number> }}
+ */
+export function getRepartitionCadeau(cadeau) {
+  const parts = repartirMontant(cadeau.montant, cadeau.contributeurIds || []);
+  return {
+    montantTotal: cadeau.montant,
+    acheteurId: cadeau.acheteurId,
+    parts,
+  };
+}
+
+/**
  * Recalcule soldes en utilisant des parts ajustées pour éviter les écarts d'un centime.
  * @param {Participant[]} participants
  * @param {Cadeau[]} cadeaux
  * @returns {Map<string, number>}
  */
 export function computeSoldesExact(participants, cadeaux) {
+  // #region agent log
+  const _participants = participants.map((p) => ({ id: p.id, nom: p.nom }));
+  const _cadeaux = cadeaux.map((c) => ({ id: c.id, nom: c.nom, montant: c.montant, acheteurId: c.acheteurId, contributeurIds: c.contributeurIds }));
+  fetch('http://127.0.0.1:7815/ingest/7a9aea5e-7949-4341-811c-9f60874ab754', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '7bf1d6' }, body: JSON.stringify({ sessionId: '7bf1d6', location: 'calc.js:computeSoldesExact:input', message: 'Input participants and cadeaux', data: { participants: _participants, cadeaux: _cadeaux }, timestamp: Date.now(), hypothesisId: 'H2,H5' }) }).catch(() => {});
+  // #endregion
   const paye = new Map();
   const doit = new Map();
   for (const p of participants) {
@@ -71,17 +90,31 @@ export function computeSoldesExact(participants, cadeaux) {
     doit.set(p.id, 0);
   }
   for (const c of cadeaux) {
-    const parts = repartirMontant(c.montant, c.contributeurIds);
+    const contribIds = c.contributeurIds ?? [];
+    const parts = repartirMontant(c.montant, contribIds);
+    // #region agent log
+    const partsArr = Array.from(parts.entries()).map(([id, part]) => ({ id, part }));
+    fetch('http://127.0.0.1:7815/ingest/7a9aea5e-7949-4341-811c-9f60874ab754', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '7bf1d6' }, body: JSON.stringify({ sessionId: '7bf1d6', location: 'calc.js:computeSoldesExact:perCadeau', message: 'Cadeau parts', data: { cadeauNom: c.nom, montant: c.montant, acheteurId: c.acheteurId, contributeurIds: contribIds, parts: partsArr }, timestamp: Date.now(), hypothesisId: 'H1,H2' }) }).catch(() => {});
+    // #endregion
     paye.set(c.acheteurId, ROUND((paye.get(c.acheteurId) ?? 0) + c.montant));
     parts.forEach((part, id) => {
       doit.set(id, ROUND((doit.get(id) ?? 0) + part));
     });
   }
   const soldes = new Map();
+  let sumSoldes = 0;
   for (const p of participants) {
-    soldes.set(p.id, ROUND((paye.get(p.id) ?? 0) - (doit.get(p.id) ?? 0)));
+    const payeVal = paye.get(p.id) ?? 0;
+    const doitVal = doit.get(p.id) ?? 0;
+    const solde = ROUND(payeVal - doitVal);
+    soldes.set(p.id, solde);
+    sumSoldes += solde;
   }
-  return soldes;
+  // #region agent log
+  const soldesDetail = participants.map((p) => ({ id: p.id, nom: p.nom, paye: paye.get(p.id) ?? 0, doit: doit.get(p.id) ?? 0, solde: soldes.get(p.id) ?? 0 }));
+  fetch('http://127.0.0.1:7815/ingest/7a9aea5e-7949-4341-811c-9f60874ab754', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '7bf1d6' }, body: JSON.stringify({ sessionId: '7bf1d6', location: 'calc.js:computeSoldesExact:output', message: 'Soldes per participant and sum', data: { soldesDetail, sumSoldes: ROUND(sumSoldes) }, timestamp: Date.now(), hypothesisId: 'H4,H5' }) }).catch(() => {});
+  // #endregion
+  return { soldes, paye, doit };
 }
 
 /**
@@ -118,13 +151,43 @@ export function computeDettes(soldes) {
 }
 
 /**
+ * Dettes brutes par paire (A, B) : pour chaque cadeau où B a payé et A a contribué, somme des parts de A.
+ * Chaque entrée = A doit montant € à B (total sur tous les achats concernés).
+ * @param {Participant[]} participants
+ * @param {Cadeau[]} cadeaux
+ * @returns {{ fromId: string, toId: string, montant: number }[]}
+ */
+export function getDettesBrutes(participants, cadeaux) {
+  const allPairs = participants.flatMap((from) =>
+    participants.filter((to) => to.id !== from.id).map((to) => ({ fromId: from.id, toId: to.id }))
+  );
+  const map = new Map();
+  for (const c of cadeaux) {
+    const rep = getRepartitionCadeau(c);
+    for (const { fromId, toId } of allPairs) {
+      if (rep.acheteurId === toId) {
+        const part = rep.parts.get(fromId);
+        if (part != null && part > 0) {
+          const key = `${fromId}-${toId}`;
+          map.set(key, ROUND((map.get(key) ?? 0) + part));
+        }
+      }
+    }
+  }
+  return allPairs
+    .map(({ fromId, toId }) => ({ fromId, toId, montant: map.get(`${fromId}-${toId}`) ?? 0 }))
+    .filter((d) => d.montant > 0);
+}
+
+/**
  * Combine soldes exacts + dettes pour l'affichage.
  * @param {Participant[]} participants
  * @param {Cadeau[]} cadeaux
- * @returns {{ soldes: Map<string, number>, dettes: { fromId: string, toId: string, montant: number }[] }}
+ * @returns {{ soldes: Map<string, number>, paye: Map<string, number>, doit: Map<string, number>, dettes: { fromId: string, toId: string, montant: number }[], dettesBrutes: { fromId: string, toId: string, montant: number }[] }}
  */
 export function computeAll(participants, cadeaux) {
-  const soldes = computeSoldesExact(participants, cadeaux);
+  const { soldes, paye, doit } = computeSoldesExact(participants, cadeaux);
   const dettes = computeDettes(soldes);
-  return { soldes, dettes };
+  const dettesBrutes = getDettesBrutes(participants, cadeaux);
+  return { soldes, paye, doit, dettes, dettesBrutes };
 }
